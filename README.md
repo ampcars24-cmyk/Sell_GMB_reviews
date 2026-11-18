@@ -1,4 +1,3 @@
-Warning: fs was declared with const; use let for reassignable variables.
 # GMB Sell Reviews dashboard
 
 Static GitHub Pages dashboard built from the supplied GMB Sell Reviews and SI_DATA sheets. The current source snapshot is embedded in `index.html`, so it renders when opened directly as a local file and when published to GitHub Pages. `data.json` is retained as a separate readable copy of the snapshot.
