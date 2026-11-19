@@ -1,33 +1,32 @@
 # GMB Reviews Apps Script Sync
 
-This Apps Script project syncs the Sell review summary and filtered SI_DATA rows to the existing GitHub Pages snapshot at `data.json`. It is an automation project, not an HTML dashboard.
+This standalone Apps Script project updates the dashboard's Google Sheets snapshot and polls Gmail for the partner's CARS24 MTD Excel report. Gmail polling runs every five minutes and is near real time, not an instant push. The public report view receives aggregate counts only.
 
-## What it syncs
+## Email report view
 
-- Monthly review counts by region and date from tabs named like `Oct'26` and `Nov'26`.
-- Qualified SI_DATA counts grouped by RETAIL_REGION and column AA date, requiring nonblank DRIVER_UPLOAD_START and VEHICLE_CONDITION exactly equal to `Non Scrap & Perfect Working Condition Car`.
-- Negative-review counts by date and inferred region. Review text, reviewer identity, business location, and other row-level details are omitted from the public sync.
+- Finds recent `.xlsx` messages using the optional Gmail search query in Script Properties (`MAIL_QUERY`). The default searches recent XLSX attachments; the attachment name must match `CARS24_Reviews_MTD_*.xlsx`.
+- Converts the workbook temporarily to Google Sheets, reads `Reviews Data`, checks its row and 1–2 star counts against `Summary`, then trashes the temporary converted file.
+- Publishes only Buy, Sell and Other totals grouped by review date and state/region to `mail-mtd-data.json`. It does not publish review text, reviewer names, phone numbers, or individual listings.
+- Classifies a Business Name containing “Buy” as Buy; otherwise a name containing “Sell” as Sell; remaining listings stay in Other. Negative means 1–2 stars. Positive is total minus negative, so neutral is included in positive in line with the dashboard convention.
+- Regions come from state names in the Location field where present, with common city names mapped to states; unresolved locations appear under Unmapped. The workbook date range/as-of is preserved; reports may lag collection by 1–2 days.
 
-## Near-real-time behavior
+## Google Apps Script setup
 
-Installable on-edit, on-change, and form-submit triggers start a sync when either source spreadsheet changes. A one-minute time trigger is a fallback for formula/API-driven changes that do not fire edit triggers. GitHub Pages must then finish its normal deployment; end-to-end updates can take longer than a minute. Apps Script triggers are best-effort and are subject to Google quotas.
-
-## Install
-
-1. Create a standalone project at [script.google.com](https://script.google.com/) and add `Code.gs` and `appsscript.json` from this folder.
-2. In **Project Settings → Script Properties**, add:
-   - `REVIEWS_SHEET_ID`: the GMB Sell Reviews spreadsheet ID.
-   - `STOCK_SHEET_ID`: the Customer Review Form (Responses) spreadsheet ID.
+1. Create/open the standalone project at [script.google.com](https://script.google.com/) and copy `Code.gs` and `appsscript.json` into it. Enable the **Gmail API** and **Drive API** under **Services** in the Apps Script editor (the manifest also declares them).
+2. Add Script Properties:
+   - `REVIEWS_SHEET_ID`: GMB Sell Reviews spreadsheet ID.
+   - `STOCK_SHEET_ID`: Customer Review Form (Responses) spreadsheet ID.
    - `GITHUB_REPOSITORY`: `ampcars24-cmyk/Sell_GMB_reviews`.
    - `GITHUB_BRANCH`: `main`.
    - `GITHUB_FILE_PATH`: `data.json`.
-   - `GITHUB_TOKEN`: a fine-grained GitHub token restricted to this repo with **Contents: Read and write**.
-3. Run `installSyncTriggers` once and approve the requested spreadsheet-read and external-request scopes.
-4. Check **Executions** in Apps Script after the first sync. Run `getSyncStatus` to see the last successful push and installed trigger count.
+   - `GITHUB_TOKEN`: fine-grained GitHub token limited to this repository with **Contents: Read and write**.
+   - `MAIL_QUERY` (optional): Gmail search query to restrict sender/subject, for example `from:reports@example.com filename:xlsx newer_than:120d`. Keep the report filename pattern `CARS24_Reviews_MTD_*.xlsx`.
+3. Run `installSyncTriggers` once from the Apps Script editor and approve the spreadsheet read, Gmail read, Drive file, and external request access. This installs the existing sheet sync and a five-minute Gmail poll. Apps Script runs as the account that installs the trigger.
+4. Check **Executions** for errors and run `getSyncStatus` to see the latest sync timestamps. Run `removeSyncTriggers` to disable all installed sync triggers.
 
-Keep the GitHub token only in Script Properties. Do not paste it into source code or commit it to the repository.
+The GitHub token must remain in Script Properties and must never be placed in source code. Updating this repository's Apps Script files does not update a separately deployed Apps Script project by itself; copy the latest source into that project and install/authorize triggers there.
 
-## Disable
+## Existing Google Sheets sync
 
-Run `removeSyncTriggers` to stop the scheduled and sheet-change syncs.
+The `syncFromSheets` handler updates `data.json` from the monthly regional review summary and qualified `SI_DATA` rows. Qualified stock-ins require RETAIL_REGION, date from column AA, nonblank DRIVER_UPLOAD_START, and VEHICLE_CONDITION exactly `Non Scrap & Perfect Working Condition Car`. Public negative-review output is reduced to counts and omits row-level text and identity details.
 
