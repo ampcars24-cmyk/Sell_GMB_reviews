@@ -58,21 +58,23 @@ function pollLatestMailReport() {
     const cfg = getConfig_();
     const props = PropertiesService.getScriptProperties();
     const list = Gmail.Users.Messages.list('me', { q: cfg.MAIL_QUERY || SYNC_CONFIG.MAIL_QUERY, maxResults: 30 });
-    const messages = (list.messages || []).slice().sort(function(a, b) { return Number(b.internalDate) - Number(a.internalDate); });
+    const messages = list.messages || [];
     if (!messages.length) return { status: 'no-matching-mail' };
     const lastDate = props.getProperty('LAST_EMAIL_REPORT_DATE') || '';
     let selected = null, attachment = null;
     for (let i = 0; i < messages.length; i++) {
-      if (messages[i].id === props.getProperty('LAST_EMAIL_MESSAGE_ID')) return { status: 'unchanged' };
       const msg = Gmail.Users.Messages.get('me', messages[i].id, { format: 'full' });
       const found = findXlsxAttachment_(msg.payload);
       if (found && reportDateFromFilename_(found.filename) >= lastDate) {
-        selected = { id: messages[i].id, internalDate: Number(msg.internalDate) };
-        attachment = found;
-        break;
+        const received = Number(msg.internalDate) || 0;
+        if (!selected || received > selected.internalDate) {
+          selected = { id: messages[i].id, internalDate: received };
+          attachment = found;
+        }
       }
     }
     if (!selected || !attachment) return { status: 'no-new-report' };
+    if (selected.id === props.getProperty('LAST_EMAIL_MESSAGE_ID')) return { status: 'unchanged' };
     const part = Gmail.Users.Messages.Attachments.get('me', selected.id, attachment.attachmentId);
     const bytes = Utilities.base64DecodeWebSafe(part.data);
     const blob = Utilities.newBlob(bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', attachment.filename);
