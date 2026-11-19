@@ -214,6 +214,13 @@ function syncFromSheets() {
   try {
     const cfg = getConfig_();
     const snapshot = buildSnapshot_(cfg);
+    let buyCityStatus = { status:'skipped' };
+    try {
+      buyCityStatus = syncBuySmallCityMetrics_(cfg);
+    } catch (buyError) {
+      console.log('Buy small-city sync failed; continuing the main Sell snapshot: ' + buyError);
+      buyCityStatus = { status:'error', message:String(buyError) };
+    }
     const json = JSON.stringify(snapshot);
     const hash = Utilities.base64Encode(
       Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, json, Utilities.Charset.UTF_8)
@@ -221,14 +228,14 @@ function syncFromSheets() {
     const props = PropertiesService.getScriptProperties();
     if (hash === props.getProperty('LAST_SUCCESSFUL_HASH')) {
       console.log('No source changes; GitHub was not updated.');
-      return { status: 'unchanged', asOf: snapshot.meta.asOf };
+      return { status: 'unchanged', asOf: snapshot.meta.asOf, buySmallCities: buyCityStatus };
     }
 
     publishToGitHub_(cfg, json);
     props.setProperty('LAST_SUCCESSFUL_HASH', hash);
     props.setProperty('LAST_SUCCESSFUL_SYNC', new Date().toISOString());
     console.log('Published dashboard data through ' + snapshot.meta.asOf);
-    return { status: 'published', asOf: snapshot.meta.asOf };
+    return { status: 'published', asOf: snapshot.meta.asOf, buySmallCities: buyCityStatus };
   } finally {
     lock.releaseLock();
   }
@@ -254,6 +261,102 @@ function getConfig_() {
     throw new Error('GITHUB_REPOSITORY must use owner/repository format.');
   }
   return cfg;
+}
+
+/** Refresh the five-city Buy scorecard while keeping all row-level data private. */
+function syncBuySmallCityMetrics_(cfg) {
+  const book = SpreadsheetApp.openById(cfg.REVIEWS_SHEET_ID);
+  const sheet = book.getSheetByName('Buy Reviews');
+  if (!sheet) throw new Error('Buy Reviews tab not found in review source workbook.');
+  const header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(function(v) { return String(v || '').trim(); });
+  const col = function(name) { const i = header.indexOf(name); if (i < 0) throw new Error('Buy Reviews is missing column: ' + name); return i + 1; };
+  const lastRow = sheet.getLastRow();
+  const rowCount = Math.max(0, lastRow - 1);
+  const values = function(name) { return rowCount ? sheet.getRange(2, col(name), rowCount, 1).getValues().map(function(r) { return r[0]; }) : []; };
+  const businesses = values('Business Name'), locations = values('Location'), ratings = values('Review Rating');
+  const dates = values('Review Date'), replyDates = values('Review Reply Date'), replyTimes = values('Reply Time');
+  const cityRules = [
+    { name:'Kochi', terms:['kochi'] }, { name:'Kolkata', terms:['kolkata'] },
+    { name:'Ranchi', terms:['ranchi'] }, { name:'Dehradun', terms:['dehradun'] },
+    { name:'Vizag', terms:['vizag','visakhapatnam'] }
+  ];
+  const byMonth = {};
+  let asOf = '';
+  const cutoff = yesterdayKey_();
+  for (let i = 0; i < rowCount; i++) {
+    const date = smallCityDateKey_(dates[i]);
+    if (!date || date > cutoff) continue;
+    const place = (String(businesses[i] || '') + ' ' + String(locations[i] || '')).toLowerCase();
+    const city = cityRules.find(function(rule) { return rule.terms.some(function(term) { return place.indexOf(term) >= 0; }); });
+    if (!city) continue;
+    const month = date.slice(0, 7);
+    byMonth[month] = byMonth[month] || {};
+    const record = byMonth[month][city.name] || { reviews:0, negative:0, replied:0, within24h:0, negativeReplied:0 };
+    const rating = Number(ratings[i]) || 0;
+    const negative = rating > 0 && rating <= 2;
+    const replyDate = String(replyDates[i] || '').trim();
+    const replied = !!replyDate && !/^no reply$/i.test(replyDate);
+    const replyMinutes = replyTimeMinutes_(replyTimes[i]);
+    record.reviews++;
+    if (negative) record.negative++;
+    if (replied) {
+      record.replied++;
+      if (replyMinutes !== null && replyMinutes <= 1440) record.within24h++;
+      if (negative) record.negativeReplied++;
+    }
+    byMonth[month][city.name] = record;
+    if (date > asOf) asOf = date;
+  }
+  const metrics = {
+    meta: {
+      source: 'GMB Sell Reviews · Buy Reviews', asOf: asOf,
+      slaHours: 24,
+      notes: [
+        'Counts and reply timings are aggregated from the Buy Reviews source for Kochi, Kolkata, Ranchi, Dehradun and Vizag; duplicate city entries are consolidated.',
+        'Vizag includes source rows whose Business Name or Location uses Visakhapatnam.',
+        'Reply rate is replied reviews divided by all reviews. The assumed 24-hour SLA counts replies with recorded Reply Time at or under 24 hours, divided by replied reviews.',
+        'November visits use the supplied monthly Buy Delivery snapshot, whose exact as-of boundary is unspecified.',
+        'Negative reviews with a reply measure response coverage only; they do not confirm customer recovery.'
+      ]
+    },
+    byMonth: byMonth
+  };
+  const metricsJson = JSON.stringify(metrics);
+  const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, metricsJson, Utilities.Charset.UTF_8));
+  const props = PropertiesService.getScriptProperties();
+  if (hash === props.getProperty('LAST_BUY_SMALL_CITIES_HASH')) return { status:'unchanged', asOf:asOf };
+
+  const path = 'small-city-metrics.json';
+  publishJsonToGitHub_(cfg, path, metricsJson, 'Refresh Buy small-city review and reply metrics through ' + (asOf || cutoff));
+  props.setProperty('LAST_BUY_SMALL_CITIES_HASH', hash);
+  props.setProperty('LAST_BUY_SMALL_CITIES_SYNC', new Date().toISOString());
+  return { status:'published', asOf:asOf };
+}
+
+function smallCityDateKey_(value) {
+  if (value instanceof Date && !isNaN(value.getTime())) return Utilities.formatDate(value, SYNC_CONFIG.TIME_ZONE, 'yyyy-MM-dd');
+  if (typeof value === 'number') return dateKey_(value);
+  const s = String(value || '').trim();
+  const match = s.match(/^(\d{1,2})[- ]([A-Za-z]{3})[- ](\d{2,4})$/);
+  if (match) {
+    const months = { jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12' };
+    const mm = months[match[2].toLowerCase()];
+    if (mm) return (match[3].length === 2 ? '20' : '') + match[3] + '-' + mm + '-' + ('0' + match[1]).slice(-2);
+  }
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return iso ? iso[1] + '-' + iso[2] + '-' + iso[3] : '';
+}
+
+function replyTimeMinutes_(value) {
+  if (typeof value === 'number' && isFinite(value)) return value * 1440;
+  const s = String(value || '').toLowerCase();
+  if (!s || /no reply/.test(s)) return null;
+  let total = 0, found = false;
+  [[/(\d+(?:\.\d+)?)\s*day/,1440],[/(\d+(?:\.\d+)?)\s*hr/,60],[/(\d+(?:\.\d+)?)\s*min/,1]].forEach(function(pair) {
+    const match = s.match(pair[0]);
+    if (match) { total += Number(match[1]) * pair[1]; found = true; }
+  });
+  return found ? total : null;
 }
 
 function buildSnapshot_(cfg) {
@@ -488,6 +591,7 @@ function getSyncStatus() {
       return [SYNC_CONFIG.HANDLER, SYNC_CONFIG.MAIL_HANDLER].indexOf(t.getHandlerFunction()) >= 0;
     }).length,
     lastEmailSync: p.getProperty('LAST_EMAIL_SYNC') || 'not yet synced',
+    lastBuySmallCitiesSync: p.getProperty('LAST_BUY_SMALL_CITIES_SYNC') || 'not yet synced',
     mailQuery: p.getProperty('MAIL_QUERY') || SYNC_CONFIG.MAIL_QUERY
   };
 }

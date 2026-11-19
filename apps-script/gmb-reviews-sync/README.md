@@ -1,6 +1,6 @@
 # GMB Reviews Apps Script Sync
 
-This standalone Apps Script project updates the dashboard's Google Sheets snapshot and polls Gmail for the partner's CARS24 MTD Excel report. Gmail polling runs every five minutes and is near real time, not an instant push. The public report view receives aggregate counts only.
+This standalone Apps Script project syncs the existing Sell and stock-in snapshot, refreshes the Buy Small Cities aggregates from the `Buy Reviews` sheet, and polls Gmail for the partner's CARS24 MTD Excel report. Gmail polling runs every five minutes and is near real time, not an instant push. Public views receive aggregate counts only.
 
 ## Email report view
 
@@ -28,5 +28,5 @@ The GitHub token must remain in Script Properties and must never be placed in so
 
 ## Existing Google Sheets sync
 
-The `syncFromSheets` handler updates `data.json` from the monthly regional review summary and qualified `SI_DATA` rows. Qualified stock-ins require RETAIL_REGION, date from column AA, nonblank DRIVER_UPLOAD_START, and VEHICLE_CONDITION exactly `Non Scrap & Perfect Working Condition Car`. Public negative-review output is reduced to counts and omits row-level text and identity details.
+The `syncFromSheets` handler updates `data.json` from the monthly regional review summary and qualified `SI_DATA` rows. It also reads only the required fields from the `Buy Reviews` tab and updates aggregate review counts, reply rates, negative reply coverage, and replies within 24 hours for Kochi, Kolkata, Ranchi, Dehradun, and Vizag in `small-city-metrics.json`. The Buy view assumes a 24-hour SLA threshold. Negative-review replies are a response-coverage proxy, not proof of customer recovery. Qualified stock-ins require RETAIL_REGION, date from column AA, nonblank DRIVER_UPLOAD_START, and VEHICLE_CONDITION exactly `Non Scrap & Perfect Working Condition Car`. Public negative-review output is reduced to counts and omits row-level text and identity details.
 
